@@ -14,7 +14,6 @@ using osrm::util::guidance::getTurnDirection;
 
 struct out_way
 {
-    bool entry_allowed = false;
     bool same_name_id = false;
     bool same_classification = false;
     bool same_or_higher_priority = false;
@@ -401,29 +400,38 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
 
     const EdgeData &in_way = node_based_graph.GetEdgeData(via_edge);
 
+    // get a count of number of ways from that intersection that qualify to have
+    // continue instruction because they share a name with the approaching way
+    const std::pair<std::int64_t, std::int64_t> num_continue_names = [&]() {
+        std::int64_t count = 0, count_valid = 0;
+        for (std::size_t i = 0, size = intersection.size(); i < size; ++i)
+        {
+            const auto &way = node_based_graph.GetEdgeData(intersection[i].eid);
+            if (way.name_id == in_way.name_id) {
+                ++count;
+                if (intersection[i].entry_allowed)
+                    ++count_valid;
+            }
+        }
+        return std::make_pair(count, count_valid);
+    }();
+
     std::vector<out_way> out_ways;
-    std::size_t num_valid_entries = 0;
 
     for (std::size_t i = 1, last = intersection.size(); i < last; ++i)
     {
         out_way out;
-        out.index = i;
         out.road = &intersection[i];
-        out.entry_allowed = intersection[i].entry_allowed;
-        if (!intersection[i].entry_allowed)
-        {
-            out_ways.push_back(out);
+        if (!out.road->entry_allowed)
             continue;
-        }
-        ++num_valid_entries;
 
         const auto out_node = node_based_graph.GetEdgeData(intersection[i].eid);
-        const auto out_classification = out_node.road_classification;
 
+        out.index = i;
         out.deviation_from_straight = angularDeviation(intersection[i].angle, STRAIGHT_ANGLE);
         out.same_or_higher_priority =
             out_node.road_classification.GetPriority() <= in_way.road_classification.GetPriority();
-        out.same_classification = out_classification == in_way.road_classification;
+        out.same_classification = out_node.road_classification == in_way.road_classification;
         out.same_name_id = out_node.name_id == in_way.name_id;
 
         out_ways.push_back(out);
@@ -431,7 +439,7 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
 
     const auto End = end(out_ways);
     // dead end, or otherwise no exitable ways
-    if (num_valid_entries == 0)
+    if (out_ways.size() == 0)
         return 0;
 
     // sort out ways by what they share with the in way
@@ -439,21 +447,19 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     const auto sort_by = [](const out_way &lhs, const out_way &rhs) {
         auto left_tie = std::tie(lhs.same_classification, lhs.same_or_higher_priority);
         auto right_tie = std::tie(rhs.same_classification, rhs.same_or_higher_priority);
-        return lhs.entry_allowed > rhs.entry_allowed ||
-               (lhs.entry_allowed == rhs.entry_allowed &&
-                (lhs.deviation_from_straight < rhs.deviation_from_straight ||
+        return (lhs.deviation_from_straight < rhs.deviation_from_straight ||
                  (lhs.deviation_from_straight == rhs.deviation_from_straight &&
-                  left_tie > right_tie)));
+                  left_tie > right_tie));
     };
     std::stable_sort(begin(out_ways), end(out_ways), sort_by);
 
     // best candidate is the first way sorted to have the smallest deviation from
     // straight and is same or higher priority class
-    const auto sameOrHigher = [&](const out_way &way) { return way.entry_allowed == true; };
-
+    const auto sameOrHigher = [&](const out_way &way) {
+        return way.same_or_higher_priority == true;
+    };
     const auto notLowPriority = [&](const out_way &way) {
-        return way.entry_allowed &&
-               !node_based_graph.GetEdgeData(way.road->eid)
+        return !node_based_graph.GetEdgeData(way.road->eid)
                     .road_classification.IsLowPriorityRoadClass();
     };
     auto best_candidate_it = std::find_if(begin(out_ways), End, sameOrHigher);
@@ -470,35 +476,21 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     // double check if lowest deviation from straight would still be better choice
     if (static_cast<int>(out_ways[0].index) != best)
     {
+        const out_way first = out_ways[0];
         const auto deviation_diff =
-            (best_deviation - out_ways[0].deviation_from_straight) > FUZZY_ANGLE_DIFFERENCE;
-        const auto NotRampClass =
-            !node_based_graph.GetEdgeData(intersection[best].eid).road_classification.IsRampClass();
-        if (deviation_diff && notLowPriority(out_ways[0]) && NotRampClass)
+            (best_deviation - first.deviation_from_straight) > FUZZY_ANGLE_DIFFERENCE;
+        const auto NotRampClass = !node_based_graph.GetEdgeData(intersection[first.index].eid)
+                                       .road_classification.IsRampClass();
+        if (deviation_diff && notLowPriority(first) && NotRampClass)
         {
-            best = out_ways[0].index;
-            best_deviation = out_ways[0].deviation_from_straight;
+            best = first.index;
+            best_deviation = first.deviation_from_straight;
         }
     }
 
     // No non-low priority roads? Declare no obvious turn
     if (best == 0)
         return 0;
-
-    // get a count of number of ways from that intersection that qualify to have
-    // continue instruction because they share a name with the approaching way
-    const std::pair<std::int64_t, std::int64_t> num_continue_names = [&]() {
-        std::int64_t count = 0, count_valid = 0;
-        std::size_t i, size = out_ways.size();
-        for (i = 0; i < size; ++i)
-        {
-            if (out_ways[i].same_name_id)
-                ++count;
-            if (out_ways[i].entry_allowed)
-                ++count_valid;
-        }
-        return std::make_pair(count, count_valid);
-    }();
 
     // no out ways share the same name as the approach street
     if (num_continue_names.first == 0)
@@ -510,7 +502,9 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
         // continue roads exist
         // best_continue is the first sorted way that shares the same name as the in way
         const auto sameName = [&](const out_way &lhs) {
-            return lhs.same_name_id == true && lhs.entry_allowed;
+            return lhs.same_name_id == true &&
+                   !node_based_graph.GetEdgeData(lhs.road->eid).road_classification.IsLinkClass() &&
+                   !node_based_graph.GetEdgeData(lhs.road->eid).road_classification.IsRampClass();
         };
         const auto End = end(out_ways);
         const auto best_continue_it = std::find_if(begin(out_ways), End, sameName);

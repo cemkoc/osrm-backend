@@ -481,7 +481,9 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
             (best_deviation - first.deviation_from_straight) > FUZZY_ANGLE_DIFFERENCE;
         const auto NotRampClass = !node_based_graph.GetEdgeData(intersection[first.index].eid)
                                        .road_classification.IsRampClass();
-        if (deviation_diff && notLowPriority(first) && NotRampClass)
+        const auto NotLinkClass = !node_based_graph.GetEdgeData(intersection[first.index].eid)
+                                       .road_classification.IsLinkClass();
+        if (deviation_diff && notLowPriority(first) && NotRampClass && NotLinkClass)
         {
             best = first.index;
             best_deviation = first.deviation_from_straight;
@@ -502,9 +504,7 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
         // continue roads exist
         // best_continue is the first sorted way that shares the same name as the in way
         const auto sameName = [&](const out_way &lhs) {
-            return lhs.same_name_id == true &&
-                   !node_based_graph.GetEdgeData(lhs.road->eid).road_classification.IsLinkClass() &&
-                   !node_based_graph.GetEdgeData(lhs.road->eid).road_classification.IsRampClass();
+            return lhs.same_name_id == true;
         };
         const auto End = end(out_ways);
         const auto best_continue_it = std::find_if(begin(out_ways), End, sameName);

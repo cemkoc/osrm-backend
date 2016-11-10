@@ -445,11 +445,9 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     // sort out ways by what they share with the in way
     // entry allowed, lowest deviation to greatest deviation, name, classification and priority
     const auto sort_by = [](const out_way &lhs, const out_way &rhs) {
-        auto left_tie = std::tie(lhs.same_classification, lhs.same_or_higher_priority);
-        auto right_tie = std::tie(rhs.same_classification, rhs.same_or_higher_priority);
-        return (lhs.deviation_from_straight < rhs.deviation_from_straight ||
-                 (lhs.deviation_from_straight == rhs.deviation_from_straight &&
-                  left_tie > right_tie));
+        auto left_tie = std::tie(rhs.deviation_from_straight, lhs.same_classification, lhs.same_or_higher_priority);
+        auto right_tie = std::tie(lhs.deviation_from_straight, rhs.same_classification, rhs.same_or_higher_priority);
+        return left_tie > right_tie;
     };
     std::stable_sort(begin(out_ways), end(out_ways), sort_by);
 
